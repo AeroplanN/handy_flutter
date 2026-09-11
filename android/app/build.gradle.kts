@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "computer.handy.handy"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -29,6 +29,10 @@ void main() {
           expect(model.joinerFile, isNotNull, reason: model.id);
         case ModelArch.nemoCtc:
           expect(model.modelFile, isNotNull, reason: model.id);
+        case ModelArch.nemotronStreaming:
+          expect(model.encoderFile, isNotNull, reason: model.id);
+          expect(model.decoderFile, isNotNull, reason: model.id);
+          expect(model.joinerFile, isNotNull, reason: model.id);
         case ModelArch.whisper:
           expect(model.encoderFile, isNotNull, reason: model.id);
           expect(model.decoderFile, isNotNull, reason: model.id);

@@ -39,25 +39,62 @@ class HistoryService {
     return db;
   }
 
-  Future<List<HistoryEntry>> list({int limit = 100, int offset = 0}) async {
+  Future<List<HistoryEntry>> list({
+    int limit = 100,
+    int offset = 0,
+    bool pinnedOnly = false,
+    bool withAudioOnly = false,
+  }) =>
+      _query(
+        limit: limit,
+        offset: offset,
+        pinnedOnly: pinnedOnly,
+        withAudioOnly: withAudioOnly,
+      );
+
+  Future<List<HistoryEntry>> search(
+    String query, {
+    int limit = 50,
+    int offset = 0,
+    bool pinnedOnly = false,
+    bool withAudioOnly = false,
+  }) =>
+      _query(
+        text: query,
+        limit: limit,
+        offset: offset,
+        pinnedOnly: pinnedOnly,
+        withAudioOnly: withAudioOnly,
+      );
+
+  /// Общий путь для списка и поиска: условия собираются из тех же кирпичей,
+  /// поэтому фильтры работают одинаково в обоих случаях.
+  Future<List<HistoryEntry>> _query({
+    String? text,
+    required int limit,
+    required int offset,
+    required bool pinnedOnly,
+    required bool withAudioOnly,
+  }) async {
     final db = await _open();
+
+    final conditions = <String>[];
+    final args = <Object>[];
+
+    if (text != null && text.isNotEmpty) {
+      conditions.add('text LIKE ?');
+      args.add('%$text%');
+    }
+    if (pinnedOnly) conditions.add('saved = 1');
+    if (withAudioOnly) conditions.add('file_name IS NOT NULL');
+
     final rows = await db.query(
       'transcription_history',
+      where: conditions.isEmpty ? null : conditions.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
       orderBy: 'timestamp DESC',
       limit: limit,
       offset: offset,
-    );
-    return rows.map(HistoryEntry.fromRow).toList();
-  }
-
-  Future<List<HistoryEntry>> search(String query) async {
-    final db = await _open();
-    final rows = await db.query(
-      'transcription_history',
-      where: 'text LIKE ?',
-      whereArgs: ['%$query%'],
-      orderBy: 'timestamp DESC',
-      limit: 200,
     );
     return rows.map(HistoryEntry.fromRow).toList();
   }

@@ -17,6 +17,7 @@ import '../services/output_service.dart';
 import '../services/settings_service.dart';
 import '../services/text_post_process.dart';
 import '../services/transcriber.dart';
+import 'home_phase.dart';
 
 enum RecordingState { idle, recording, transcribing }
 
@@ -60,6 +61,19 @@ class AppController extends ChangeNotifier {
   String _currentText = '';
   String get currentText => _currentText;
 
+  /// Запись истории, которой соответствует текст на экране. В режиме заметки
+  /// сюда переписывается весь накопленный текст, чтобы правки не потерялись.
+  int? _currentEntryId;
+  int? get currentEntryId => _currentEntryId;
+
+  /// Текст правили руками и ещё не сохранили.
+  bool _currentDirty = false;
+  bool get currentDirty => _currentDirty;
+
+  /// Язык, который определила модель в последней расшифровке.
+  String _lastLanguage = '';
+  String get lastLanguage => _lastLanguage;
+
   Duration? _lastElapsed;
 
   /// Сколько заняло последнее распознавание.
@@ -68,16 +82,25 @@ class AppController extends ChangeNotifier {
   String? _error;
   String? get error => _error;
 
-  double _level = 0;
+  /// Громкость 0.0–1.0 и длительность записи меняются по несколько раз в
+  /// секунду. Через `notifyListeners()` это перерисовывало бы весь экран
+  /// вместе с полем ввода текста, поэтому они живут отдельными
+  /// уведомителями: подписывается только волна и таймер.
+  final ValueNotifier<double> levelNotifier = ValueNotifier(0);
+  final ValueNotifier<Duration> elapsedNotifier = ValueNotifier(Duration.zero);
 
   /// Текущая громкость 0.0–1.0 для визуализации.
-  double get level => _level;
+  double get level => levelNotifier.value;
 
-  Duration _recordingElapsed = Duration.zero;
-  Duration get recordingElapsed => _recordingElapsed;
+  Duration get recordingElapsed => elapsedNotifier.value;
 
   List<HistoryEntry> _entries = const [];
   List<HistoryEntry> get entries => _entries;
+
+  /// Сколько расшифровок в базе всего. `entries` держит только последние —
+  /// для счётчика в шапке этого мало.
+  int _historyTotal = 0;
+  int get historyTotal => _historyTotal;
 
   bool _ready = false;
 
@@ -86,6 +109,7 @@ class AppController extends ChangeNotifier {
 
   StreamSubscription<double>? _levelSub;
   Timer? _tick;
+  Timer? _autosave;
 
   /// Выбранная модель из каталога.
   AsrModel? get selectedModel => _settings.model;
@@ -96,6 +120,21 @@ class AppController extends ChangeNotifier {
     return model != null && models.isReady(model.id) && models.vadReady;
   }
 
+  /// Что показывать на главном экране. Ошибка сюда не входит: она рисуется
+  /// баннером поверх любой фазы.
+  HomePhase get phase {
+    final model = selectedModel;
+
+    return computeHomePhase(
+      recording: _state == RecordingState.recording,
+      transcribing: _state == RecordingState.transcribing,
+      modelDownloading: model != null &&
+          models.statusOf(model.id) == ModelStatus.downloading,
+      canRecord: canRecord,
+      hasText: _currentText.isNotEmpty,
+    );
+  }
+
   Future<void> init() async {
     _settings = await _settingsService.load();
     _feedback.settings = _settings;
@@ -104,11 +143,9 @@ class AppController extends ChangeNotifier {
     await models.refresh();
     await _history.applyRetention(_settings);
     _entries = await _history.list();
+    _historyTotal = await _history.count();
 
-    _levelSub = _audio.levels.listen((value) {
-      _level = value;
-      notifyListeners();
-    });
+    _levelSub = _audio.levels.listen((value) => levelNotifier.value = value);
 
     _ready = true;
     notifyListeners();
@@ -137,8 +174,19 @@ class AppController extends ChangeNotifier {
         previous.recordingRetention != next.recordingRetention) {
       await _history.applyRetention(next);
       _entries = await _history.list();
+      _historyTotal = await _history.count();
       notifyListeners();
     }
+  }
+
+  /// Возвращает настройки к значениям по умолчанию, оставляя выбранную
+  /// модель: скачанное на диске никуда не делось, и терять его незачем.
+  Future<void> resetSettings() async {
+    await _settingsService.reset();
+    await updateSettings(Settings(
+      modelId: _settings.modelId,
+      onboardingDone: _settings.onboardingDone,
+    ));
   }
 
   // ── Запись ───────────────────────────────────────────────────────────────
@@ -164,7 +212,10 @@ class AppController extends ChangeNotifier {
     }
 
     _error = null;
-    _currentText = '';
+
+    // Правки предыдущего текста могли не успеть сохраниться: в режиме
+    // «заменять» новая расшифровка их затрёт, поэтому фиксируем сейчас.
+    await saveCurrentToHistory();
 
     try {
       await _audio.start(onLimitReached: stopAndTranscribe);
@@ -174,7 +225,7 @@ class AppController extends ChangeNotifier {
     }
 
     _state = RecordingState.recording;
-    _recordingElapsed = Duration.zero;
+    elapsedNotifier.value = Duration.zero;
     notifyListeners();
 
     if (_settings.keepScreenAwake) {
@@ -183,8 +234,7 @@ class AppController extends ChangeNotifier {
     unawaited(_feedback.recordingStarted());
 
     _tick = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      _recordingElapsed = _audio.elapsed;
-      notifyListeners();
+      elapsedNotifier.value = _audio.elapsed;
     });
 
     // Пока пишется звук, поднимаем модель в память — к концу фразы
@@ -199,7 +249,7 @@ class AppController extends ChangeNotifier {
     _tick = null;
 
     final samples = await _audio.stop();
-    _level = 0;
+    levelNotifier.value = 0;
     _state = RecordingState.transcribing;
     notifyListeners();
 
@@ -234,21 +284,47 @@ class AppController extends ChangeNotifier {
         customWords: _settings.customWords,
       );
 
-      _currentText = text;
       _lastElapsed = result.elapsed;
+      _lastLanguage = result.language;
       _state = RecordingState.idle;
-      notifyListeners();
 
-      if (text.isNotEmpty) {
-        await _deliver(text);
-        await _saveToHistory(
-          text: text,
-          samples: samples,
-          modelId: model.id,
-        );
-      } else {
+      if (text.isEmpty) {
         _error = 'Речь не распознана';
         notifyListeners();
+        return;
+      }
+
+      final append = _settings.composeMode == ComposeMode.append;
+      if (append) {
+        _appendChunk(text);
+      } else {
+        _currentText = text;
+        _currentEntryId = null;
+        _currentDirty = false;
+      }
+      notifyListeners();
+
+      // В режиме заметки не копируем и не открываем «Поделиться» на каждую
+      // диктовку: человек ещё пишет. Отклик оставляем.
+      if (append) {
+        unawaited(_feedback.transcriptionReady());
+      } else {
+        await _deliver(text);
+      }
+
+      // Каждая диктовка остаётся в истории отдельной записью со своим
+      // аудио — так работают и хранение записей, и их удаление по сроку.
+      final entry = await _saveToHistory(
+        text: text,
+        samples: samples,
+        modelId: model.id,
+      );
+
+      if (append && _currentEntryId != null) {
+        // Заметка уже начата: её первая запись хранит текст целиком.
+        await _syncNoteText();
+      } else {
+        _currentEntryId = entry.id;
       }
     } catch (e) {
       _state = RecordingState.idle;
@@ -266,16 +342,16 @@ class AppController extends ChangeNotifier {
     _tick = null;
     await _audio.cancel();
 
-    _level = 0;
+    levelNotifier.value = 0;
     _state = RecordingState.idle;
-    _recordingElapsed = Duration.zero;
+    elapsedNotifier.value = Duration.zero;
     notifyListeners();
 
     _finishRecording();
   }
 
   void _finishRecording() {
-    _recordingElapsed = Duration.zero;
+    elapsedNotifier.value = Duration.zero;
     if (_settings.keepScreenAwake) {
       unawaited(WakelockPlus.disable());
     }
@@ -308,7 +384,7 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> _saveToHistory({
+  Future<HistoryEntry> _saveToHistory({
     required String text,
     required Float32List samples,
     required String modelId,
@@ -341,9 +417,11 @@ class AppController extends ChangeNotifier {
     );
 
     _entries = [entry, ..._entries];
+    _historyTotal += 1;
     notifyListeners();
 
     await _history.applyRetention(_settings);
+    return entry;
   }
 
   void _fail(String message) {
@@ -359,12 +437,98 @@ class AppController extends ChangeNotifier {
 
   // ── Текущий текст ────────────────────────────────────────────────────────
 
+  /// Правка текста руками. Сохранение отложенное: пишем в историю не на
+  /// каждую букву, а через паузу после того, как человек остановился.
+  void editCurrent(String text) {
+    if (text == _currentText) return;
+    _currentText = text;
+    _currentDirty = true;
+    notifyListeners();
+
+    _autosave?.cancel();
+    _autosave = Timer(const Duration(milliseconds: 1500), () {
+      unawaited(saveCurrentToHistory());
+    });
+  }
+
+  /// Дописывает распознанный кусок к тому, что уже на экране.
+  ///
+  /// Разделитель всегда абзац: он предсказуем и убирается одним Backspace,
+  /// а угадывать «точка или пробел» за пользователя мы не беремся.
+  static const _paragraphBreak = '\n\n';
+
+  void _appendChunk(String chunk) {
+    _currentText = _currentText.isEmpty
+        ? chunk
+        : '${_currentText.trimRight()}$_paragraphBreak$chunk';
+  }
+
+  /// Сохраняет текст на экране в его запись истории.
+  Future<void> saveCurrentToHistory() async {
+    _autosave?.cancel();
+    _autosave = null;
+
+    if (!_currentDirty || _currentEntryId == null) return;
+    await _syncNoteText();
+  }
+
+  /// Переписывает текст заметки в её запись истории.
+  Future<void> _syncNoteText() async {
+    final id = _currentEntryId;
+    if (id == null) return;
+
+    await _history.updateText(id, _currentText);
+    _currentDirty = false;
+
+    _entries = [
+      for (final entry in _entries)
+        entry.id == id ? entry.copyWith(text: _currentText) : entry,
+    ];
+    notifyListeners();
+  }
+
+  /// Начать с чистого листа, не потеряв текущую заметку.
+  Future<void> startNewNote() async {
+    await saveCurrentToHistory();
+    clearCurrent();
+  }
+
+  /// Открыть запись истории в редакторе на главном экране и продолжить её.
+  Future<void> loadEntryIntoCurrent(HistoryEntry entry) async {
+    await saveCurrentToHistory();
+
+    _currentText = entry.text;
+    _currentEntryId = entry.id;
+    _currentDirty = false;
+    _lastElapsed = null;
+    _error = null;
+    notifyListeners();
+  }
+
+  /// Правка текста записи прямо в истории.
+  Future<void> updateEntryText(HistoryEntry entry, String text) async {
+    final id = entry.id;
+    if (id == null || entry.text == text) return;
+
+    await _history.updateText(id, text);
+    _entries = [
+      for (final e in _entries) e.id == id ? e.copyWith(text: text) : e,
+    ];
+    if (_currentEntryId == id) _currentText = text;
+    notifyListeners();
+  }
+
   Future<void> copyCurrent() => _output.copy(_currentText);
 
   Future<void> shareCurrent() => _output.share(_currentText);
 
   void clearCurrent() {
+    _autosave?.cancel();
+    _autosave = null;
     _currentText = '';
+    _currentEntryId = null;
+    _currentDirty = false;
+    _lastLanguage = '';
     _lastElapsed = null;
     notifyListeners();
   }
@@ -373,15 +537,41 @@ class AppController extends ChangeNotifier {
 
   Future<void> reloadHistory() async {
     _entries = await _history.list();
+    _historyTotal = await _history.count();
     notifyListeners();
   }
 
-  Future<List<HistoryEntry>> searchHistory(String query) =>
-      query.trim().isEmpty ? _history.list() : _history.search(query);
+  /// Страница истории с поиском и фильтром. Поиск идёт запросом к базе, а
+  /// не фильтрацией загруженного куска, поэтому находит и старые записи.
+  Future<List<HistoryEntry>> loadHistoryPage({
+    int offset = 0,
+    int limit = 50,
+    String query = '',
+    bool pinnedOnly = false,
+    bool withAudioOnly = false,
+  }) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      return _history.list(
+        offset: offset,
+        limit: limit,
+        pinnedOnly: pinnedOnly,
+        withAudioOnly: withAudioOnly,
+      );
+    }
+    return _history.search(
+      trimmed,
+      offset: offset,
+      limit: limit,
+      pinnedOnly: pinnedOnly,
+      withAudioOnly: withAudioOnly,
+    );
+  }
 
   Future<void> deleteEntry(HistoryEntry entry) async {
     await _history.delete(entry);
     _entries = _entries.where((e) => e.id != entry.id).toList();
+    _historyTotal = (_historyTotal - 1).clamp(0, _historyTotal);
     notifyListeners();
   }
 
@@ -397,6 +587,7 @@ class AppController extends ChangeNotifier {
   Future<void> clearHistory() async {
     await _history.clear();
     _entries = const [];
+    _historyTotal = 0;
     notifyListeners();
   }
 
@@ -411,11 +602,24 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Удаляет модель с диска. Если удалили активную — переключаемся на любую
+  /// другую готовую, иначе приложение уверяло бы, что моделей нет вовсе.
   Future<void> removeModel(AsrModel model) async {
     if (_transcriber.loadedModelId == model.id) {
       await _transcriber.unload();
     }
     await models.remove(model);
+
+    if (_settings.modelId == model.id) {
+      final fallback = kModelCatalog
+          .where((m) => m.id != model.id && models.isReady(m.id))
+          .firstOrNull;
+      if (fallback != null) {
+        await selectModel(fallback);
+        return;
+      }
+    }
+
     notifyListeners();
   }
 
@@ -424,6 +628,9 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _autosave?.cancel();
+    levelNotifier.dispose();
+    elapsedNotifier.dispose();
     _tick?.cancel();
     _levelSub?.cancel();
     _audio.dispose();

@@ -2,11 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'state/app_controller.dart';
-import 'ui/screens/history_screen.dart';
-import 'ui/screens/home_screen.dart';
+import 'ui/screens/home/home_screen.dart';
 import 'ui/screens/onboarding_screen.dart';
-import 'ui/screens/settings_screen.dart';
 import 'ui/theme.dart';
+import 'ui/widgets/handy_wordmark.dart';
 
 class HandyApp extends StatelessWidget {
   const HandyApp({super.key});
@@ -21,10 +20,12 @@ class HandyApp extends StatelessWidget {
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
       themeMode: themeModeOf(controller.settings.theme),
+      // Вкладок нет: главный экран один, остальное открывается поверх него
+      // через хелперы из `ui/navigation.dart`.
       home: !controller.ready
           ? const _Splash()
           : controller.settings.onboardingDone
-              ? const RootShell()
+              ? const HomeScreen()
               : const OnboardingScreen(),
     );
   }
@@ -35,52 +36,19 @@ class _Splash extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              HandyWordmark(size: 40),
+              SizedBox(height: 20),
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ],
+          ),
+        ),
       );
-}
-
-/// Три вкладки: запись, история, настройки.
-class RootShell extends StatefulWidget {
-  const RootShell({super.key});
-
-  @override
-  State<RootShell> createState() => _RootShellState();
-}
-
-class _RootShellState extends State<RootShell> {
-  int _index = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: const [
-          HomeScreen(),
-          HistoryScreen(),
-          SettingsScreen(),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (index) => setState(() => _index = index),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.mic_none_rounded),
-            selectedIcon: Icon(Icons.mic_rounded),
-            label: 'Запись',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.history_rounded),
-            label: 'История',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings_rounded),
-            label: 'Настройки',
-          ),
-        ],
-      ),
-    );
-  }
 }

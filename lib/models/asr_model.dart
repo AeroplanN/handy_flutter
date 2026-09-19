@@ -12,6 +12,10 @@ enum ModelArch {
   /// NeMo CTC (GigaAM CTC): один файл модели.
   nemoCtc,
 
+  /// Потоковый NeMo-транcдьюсер (Nemotron 3.5 ASR): encoder + decoder + joiner,
+  /// но распознаётся через streaming-API sherpa-onnx, а не offline.
+  nemotronStreaming,
+
   /// Whisper: encoder + decoder.
   whisper,
 }
@@ -103,6 +107,8 @@ const _gigaV2Rnnt =
     'https://huggingface.co/csukuangfj/sherpa-onnx-nemo-transducer-giga-am-v2-russian-2025-04-19/resolve/main';
 const _parakeetV3 =
     'https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main';
+const _nemotron35 =
+    'https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-1120ms-int8-2026-06-11/resolve/main';
 const _whisperSmall =
     'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small/resolve/main';
 const _whisperBase =
@@ -129,6 +135,39 @@ const _whisperLangs = [
   'ko',
   'hi',
   'multi',
+];
+
+/// Языки Nemotron 3.5: 19 «transcription-ready» локалей плюс 13 с более
+/// широким покрытием. Порядок — от самых частых для нас.
+const _nemotronLangs = [
+  'ru',
+  'en',
+  'uk',
+  'de',
+  'fr',
+  'es',
+  'it',
+  'pt',
+  'nl',
+  'tr',
+  'ar',
+  'hi',
+  'ja',
+  'ko',
+  'vi',
+  'pl',
+  'cs',
+  'sk',
+  'bg',
+  'hr',
+  'da',
+  'et',
+  'fi',
+  'hu',
+  'nb',
+  'ro',
+  'sv',
+  'zh',
 ];
 
 /// Доступные модели. Порядок = порядок показа в списке.
@@ -238,6 +277,46 @@ const List<AsrModel> kModelCatalog = [
 
   // ── Многоязычные ────────────────────────────────────────────────────────
   AsrModel(
+    id: 'nemotron-3.5-streaming-ru',
+    name: 'Nemotron 3.5 ASR',
+    description:
+        'Знаки препинания и заглавные буквы прямо из модели, 32 языка. '
+        'Та же модель, что в десктопном Handy.',
+    arch: ModelArch.nemotronStreaming,
+    languages: _nemotronLangs,
+    speedScore: 60,
+    accuracyScore: 90,
+    recommended: true,
+    recommendedRank: 3,
+    encoderFile: 'encoder.int8.onnx',
+    decoderFile: 'decoder.int8.onnx',
+    joinerFile: 'joiner.int8.onnx',
+    tokensFile: 'tokens.txt',
+    files: [
+      ModelFile(
+        name: 'encoder.int8.onnx',
+        url: '$_nemotron35/encoder.int8.onnx',
+        sizeBytes: 657601521,
+      ),
+      ModelFile(
+        name: 'decoder.int8.onnx',
+        url: '$_nemotron35/decoder.int8.onnx',
+        sizeBytes: 14978075,
+      ),
+      ModelFile(
+        name: 'joiner.int8.onnx',
+        url: '$_nemotron35/joiner.int8.onnx',
+        sizeBytes: 9504438,
+      ),
+      ModelFile(
+        name: 'tokens.txt',
+        url: '$_nemotron35/tokens.txt',
+        sizeBytes: 131440,
+      ),
+    ],
+  ),
+
+  AsrModel(
     id: 'whisper-small',
     name: 'Whisper Small',
     description: '99 языков, включая русский. Медленнее, зато универсальна.',
@@ -247,7 +326,7 @@ const List<AsrModel> kModelCatalog = [
     accuracyScore: 85,
     supportsTranslate: true,
     recommended: true,
-    recommendedRank: 3,
+    recommendedRank: 4,
     encoderFile: 'small-encoder.int8.onnx',
     decoderFile: 'small-decoder.int8.onnx',
     tokensFile: 'small-tokens.txt',

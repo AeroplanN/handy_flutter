@@ -4,7 +4,12 @@ import 'package:provider/provider.dart';
 
 import '../../models/history_entry.dart';
 import '../../state/app_controller.dart';
+import '../../state/history_list_controller.dart';
+import '../tokens.dart';
+import '../widgets/history_tile.dart';
+import 'history_detail_screen.dart';
 
+/// Все расшифровки: поиск по базе, фильтры, подгрузка по мере прокрутки.
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
@@ -13,95 +18,69 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
-  final _searchController = TextEditingController();
-  String _query = '';
+  late final HistoryListController _list =
+      HistoryListController(context.read<AppController>())..load();
+
+  final TextEditingController _search = TextEditingController();
+  final ScrollController _scroll = ScrollController();
 
   @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    final remaining = _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    if (remaining < 400) _list.loadMore();
   }
 
   @override
-  Widget build(BuildContext context) {
-    final controller = context.watch<AppController>();
+  void dispose() {
+    _scroll.dispose();
+    _search.dispose();
+    _list.dispose();
+    super.dispose();
+  }
 
-    final entries = _query.isEmpty
-        ? controller.entries
-        : controller.entries
-            .where((e) => e.text.toLowerCase().contains(_query.toLowerCase()))
-            .toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('История'),
-        actions: [
-          if (controller.entries.isNotEmpty)
-            IconButton(
-              tooltip: 'Очистить историю',
-              onPressed: () => _confirmClear(context, controller),
-              icon: const Icon(Icons.delete_sweep_outlined),
-            ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: TextField(
-              controller: _searchController,
-              onChanged: (value) => setState(() => _query = value),
-              decoration: InputDecoration(
-                hintText: 'Поиск по расшифровкам',
-                prefixIcon: const Icon(Icons.search_rounded),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                isDense: true,
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.close_rounded, size: 18),
-                        onPressed: () {
-                          _searchController.clear();
-                          setState(() => _query = '');
-                        },
-                      ),
-              ),
-            ),
-          ),
-          Expanded(
-            child: entries.isEmpty
-                ? _EmptyState(hasQuery: _query.isNotEmpty)
-                : RefreshIndicator(
-                    onRefresh: controller.reloadHistory,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                      itemCount: entries.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                      itemBuilder: (context, index) => _HistoryTile(
-                        entry: entries[index],
-                        controller: controller,
-                      ),
-                    ),
-                  ),
-          ),
-        ],
+  void _openEntry(HistoryEntry entry) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => HistoryDetailScreen(
+          entry: entry,
+          onTextChanged: (text) => _list.updateText(entry, text),
+          onTogglePinned: () => _list.togglePinned(entry),
+        ),
       ),
     );
   }
 
-  Future<void> _confirmClear(
-    BuildContext context,
-    AppController controller,
-  ) async {
+  void _deleteWithUndo(HistoryEntry entry) {
+    _list.deleteWithUndo(entry);
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: const Text('Расшифровка удалена'),
+          action: SnackBarAction(
+            label: 'Вернуть',
+            onPressed: () => _list.undoDelete(entry),
+          ),
+        ),
+      );
+  }
+
+  Future<void> _confirmClear() async {
+    final controller = context.read<AppController>();
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Очистить историю?'),
         content: const Text(
-          'Все расшифровки и сохранённые аудиозаписи будут удалены. '
-          'Отменить это действие нельзя.',
+          'Удалятся все расшифровки и сохранённые аудиозаписи, включая '
+          'закреплённые. Отменить это нельзя.',
         ),
         actions: [
           TextButton(
@@ -116,182 +95,304 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
 
-    if (confirmed == true) await controller.clearHistory();
+    if (confirmed ?? false) {
+      await controller.clearHistory();
+      await _list.load();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: _list,
+      builder: (context, _) {
+        final entries = _list.entries;
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('История'),
+            actions: [
+              IconButton(
+                onPressed: _confirmClear,
+                icon: const Icon(Icons.delete_sweep_outlined),
+                tooltip: 'Очистить историю',
+              ),
+            ],
+          ),
+          body: Column(
+            children: [
+              _SearchField(controller: _search, onChanged: _list.search),
+              _Filters(
+                current: _list.filter,
+                onChanged: _list.setFilter,
+              ),
+              Expanded(
+                child: entries.isEmpty
+                    ? _EmptyState(
+                        query: _list.query,
+                        filter: _list.filter,
+                        loading: _list.loading,
+                      )
+                    : _EntryList(
+                        rows: _buildRows(entries),
+                        scroll: _scroll,
+                        loadingMore: _list.loading,
+                        onOpen: _openEntry,
+                        onDelete: _deleteWithUndo,
+                        onTogglePinned: _list.togglePinned,
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// Плоский список с заголовками дней — дешевле и проще, чем sliver-группы.
+  List<_Row> _buildRows(List<HistoryEntry> entries) {
+    final rows = <_Row>[];
+    String? lastDay;
+
+    for (final entry in entries) {
+      final day = _dayLabel(entry.timestamp);
+      if (day != lastDay) {
+        rows.add(_Row.header(day));
+        lastDay = day;
+      }
+      rows.add(_Row.entry(entry));
+    }
+
+    return rows;
+  }
+
+  static String _dayLabel(DateTime timestamp) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(timestamp.year, timestamp.month, timestamp.day);
+    final diff = today.difference(day).inDays;
+
+    if (diff == 0) return 'Сегодня';
+    if (diff == 1) return 'Вчера';
+    if (timestamp.year == now.year) {
+      return DateFormat('d MMMM', 'ru').format(timestamp);
+    }
+    return DateFormat('d MMMM y', 'ru').format(timestamp);
   }
 }
 
-class _HistoryTile extends StatelessWidget {
-  const _HistoryTile({required this.entry, required this.controller});
+/// Элемент списка: заголовок дня или запись.
+class _Row {
+  const _Row.header(this.day) : entry = null;
+  const _Row.entry(this.entry) : day = null;
 
-  final HistoryEntry entry;
-  final AppController controller;
+  final String? day;
+  final HistoryEntry? entry;
+}
+
+class _EntryList extends StatelessWidget {
+  const _EntryList({
+    required this.rows,
+    required this.scroll,
+    required this.loadingMore,
+    required this.onOpen,
+    required this.onDelete,
+    required this.onTogglePinned,
+  });
+
+  final List<_Row> rows;
+  final ScrollController scroll;
+  final bool loadingMore;
+  final void Function(HistoryEntry) onOpen;
+  final void Function(HistoryEntry) onDelete;
+  final void Function(HistoryEntry) onTogglePinned;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
 
-    return Dismissible(
-      key: ValueKey(entry.id ?? entry.timestamp.millisecondsSinceEpoch),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 20),
-        decoration: BoxDecoration(
-          color: scheme.errorContainer,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Icon(Icons.delete_outline, color: scheme.onErrorContainer),
-      ),
-      onDismissed: (_) => controller.deleteEntry(entry),
-      child: Card(
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: () => _showDetails(context),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      _formatTimestamp(entry.timestamp),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '${entry.wordCount} сл.',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const Spacer(),
-                    if (entry.saved)
-                      Icon(Icons.push_pin, size: 16, color: scheme.primary),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  entry.text,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyLarge,
-                ),
-              ],
+    return ListView.builder(
+      controller: scroll,
+      padding: const EdgeInsets.fromLTRB(kGapL, kGapS, kGapL, kGapXL),
+      itemCount: rows.length + (loadingMore ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (index >= rows.length) {
+          return const Padding(
+            padding: EdgeInsets.all(kGapL),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
             ),
-          ),
-        ),
-      ),
+          );
+        }
+
+        final row = rows[index];
+        final day = row.day;
+        if (day != null) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(kGapXS, kGapM, 0, kGapS),
+            child: Text(
+              day,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          );
+        }
+
+        final entry = row.entry!;
+        return HistoryTile(
+          entry: entry,
+          onTap: () => onOpen(entry),
+          onDelete: () => onDelete(entry),
+          onTogglePinned: () => onTogglePinned(entry),
+        );
+      },
     );
-  }
-
-  Future<void> _showDetails(BuildContext context) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (sheetContext) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.6,
-        maxChildSize: 0.92,
-        builder: (context, scrollController) => Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _formatTimestamp(entry.timestamp),
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: SingleChildScrollView(
-                  controller: scrollController,
-                  child: SelectableText(
-                    entry.text,
-                    style: Theme.of(context).textTheme.bodyLarge,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  IconButton(
-                    tooltip: entry.saved ? 'Открепить' : 'Закрепить',
-                    onPressed: () {
-                      controller.toggleSaved(entry);
-                      Navigator.of(sheetContext).pop();
-                    },
-                    icon: Icon(
-                      entry.saved
-                          ? Icons.push_pin
-                          : Icons.push_pin_outlined,
-                    ),
-                  ),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: () async {
-                      await controller.copyEntry(entry);
-                      if (!sheetContext.mounted) return;
-                      Navigator.of(sheetContext).pop();
-                    },
-                    icon: const Icon(Icons.copy_rounded, size: 18),
-                    label: const Text('Копировать'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton.icon(
-                    onPressed: () => controller.shareEntry(entry),
-                    icon: const Icon(Icons.ios_share_rounded, size: 18),
-                    label: const Text('Поделиться'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  static String _formatTimestamp(DateTime timestamp) {
-    final now = DateTime.now();
-    final sameDay = now.year == timestamp.year &&
-        now.month == timestamp.month &&
-        now.day == timestamp.day;
-
-    return sameDay
-        ? 'сегодня, ${DateFormat.Hm('ru').format(timestamp)}'
-        : DateFormat('d MMMM, HH:mm', 'ru').format(timestamp);
   }
 }
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.hasQuery});
+class _SearchField extends StatelessWidget {
+  const _SearchField({required this.controller, required this.onChanged});
 
-  final bool hasQuery;
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kGapL, 0, kGapL, kGapS),
+      child: TextField(
+        controller: controller,
+        onChanged: onChanged,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          hintText: 'Поиск по расшифровкам',
+          prefixIcon: const Icon(Icons.search_rounded),
+          filled: true,
+          fillColor: scheme.surfaceContainerLow,
+          isDense: true,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(kRadiusField),
+            borderSide: BorderSide.none,
+          ),
+          suffixIcon: controller.text.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                  onPressed: () {
+                    controller.clear();
+                    onChanged('');
+                  },
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Filters extends StatelessWidget {
+  const _Filters({required this.current, required this.onChanged});
+
+  final HistoryFilter current;
+  final ValueChanged<HistoryFilter> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: kGapL),
+        child: Row(
+          children: [
+            for (final (filter, label) in const [
+              (HistoryFilter.all, 'Все'),
+              (HistoryFilter.pinned, 'Закреплённые'),
+              (HistoryFilter.withAudio, 'С аудио'),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(right: kGapS),
+                child: FilterChip(
+                  label: Text(label),
+                  selected: current == filter,
+                  onSelected: (_) => onChanged(filter),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({
+    required this.query,
+    required this.filter,
+    required this.loading,
+  });
+
+  final String query;
+  final HistoryFilter filter;
+  final bool loading;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    final (icon, title, hint) = switch ((query.isNotEmpty, filter)) {
+      (true, _) => (
+          Icons.search_off_rounded,
+          'Ничего не найдено',
+          'Попробуйте другое слово.',
+        ),
+      (_, HistoryFilter.pinned) => (
+          Icons.push_pin_outlined,
+          'Нет закреплённых',
+          'Смахните запись вправо, чтобы закрепить её.',
+        ),
+      (_, HistoryFilter.withAudio) => (
+          Icons.graphic_eq_rounded,
+          'Нет записей с аудио',
+          'Хранение аудио настраивается в разделе «Хранилище».',
+        ),
+      _ => (
+          Icons.history_rounded,
+          'Пока ничего не записано',
+          'Расшифровки будут появляться здесь автоматически.',
+        ),
+    };
+
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            hasQuery ? Icons.search_off_rounded : Icons.history_rounded,
-            size: 48,
-            color: scheme.outline,
-          ),
-          const SizedBox(height: 12),
-          Text(
-            hasQuery ? 'Ничего не найдено' : 'Пока ничего не записано',
-            style: TextStyle(color: scheme.onSurfaceVariant),
-          ),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.all(kGapXL),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 44, color: scheme.onSurfaceVariant),
+            const SizedBox(height: kGapM),
+            Text(title, style: theme.textTheme.titleMedium),
+            const SizedBox(height: kGapXS),
+            Text(
+              hint,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

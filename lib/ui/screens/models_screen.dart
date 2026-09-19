@@ -4,49 +4,148 @@ import 'package:provider/provider.dart';
 import '../../models/asr_model.dart';
 import '../../services/model_manager.dart';
 import '../../state/app_controller.dart';
+import '../tokens.dart';
+import '../widgets/model_card.dart';
+import '../widgets/model_download_progress.dart';
 
+/// Модели распознавания.
+///
+/// Группировка по состоянию, а не по языку: сначала человек хочет понять,
+/// что у него уже есть, и только потом — что ещё бывает.
 class ModelsScreen extends StatelessWidget {
   const ModelsScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
-    // ModelManager шлёт свои уведомления о прогрессе загрузки.
     context.watch<ModelManager>();
 
-    final russian = kModelCatalog.where((m) => m.languages.length == 1).toList();
-    final multilingual =
-        kModelCatalog.where((m) => m.languages.length > 1).toList();
+    final active = controller.selectedModel;
+    final activeReady = active != null && controller.models.isReady(active.id);
+
+    final downloaded = kModelCatalog
+        .where((m) =>
+            controller.models.isReady(m.id) && !(activeReady && m.id == active.id))
+        .toList();
+    final downloading = kModelCatalog
+        .where((m) =>
+            controller.models.statusOf(m.id) == ModelStatus.downloading)
+        .toList();
+    final available = kModelCatalog
+        .where((m) =>
+            !controller.models.isReady(m.id) &&
+            controller.models.statusOf(m.id) != ModelStatus.downloading)
+        .toList();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Модели')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-        children: [
-          const _SectionTitle('Русский язык'),
-          for (final model in russian)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: ModelCard(model: model, controller: controller),
-            ),
-          const SizedBox(height: 8),
-          const _SectionTitle('Многоязычные'),
-          for (final model in multilingual)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: ModelCard(model: model, controller: controller),
-            ),
-          const SizedBox(height: 16),
-          Text(
-            'Модели скачиваются один раз и работают без интернета. '
-            'Всё распознавание идёт на устройстве — записи никуда не уходят.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-          ),
-        ],
+      body: RefreshIndicator(
+        onRefresh: controller.models.refresh,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(kGapL, 0, kGapL, kGapXL),
+          children: [
+            _Summary(controller: controller),
+
+            if (activeReady) ...[
+              const _SectionTitle('Активная'),
+              ModelCard(model: active),
+            ],
+
+            if (downloading.isNotEmpty) ...[
+              const _SectionTitle('Скачиваются'),
+              for (final model in downloading) ...[
+                ModelCard(model: model),
+                const SizedBox(height: kGapM),
+              ],
+            ],
+
+            if (downloaded.isNotEmpty) ...[
+              const _SectionTitle('Загружены'),
+              for (final model in downloaded) ...[
+                ModelCard(model: model),
+                const SizedBox(height: kGapM),
+              ],
+            ],
+
+            if (available.isNotEmpty) ...[
+              const _SectionTitle('Доступны для загрузки'),
+              ..._availableGrouped(available),
+            ],
+
+            const SizedBox(height: kGapL),
+            _Footnote(),
+          ],
+        ),
       ),
     );
+  }
+
+  /// Внутри «доступных» деление по языку всё ещё полезно: русских моделей
+  /// немного, а многоязычные крупнее и нужны не всем.
+  List<Widget> _availableGrouped(List<AsrModel> models) {
+    final russian = models.where((m) => !m.isMultilingual).toList();
+    final multilingual = models.where((m) => m.isMultilingual).toList();
+
+    return [
+      if (russian.isNotEmpty) ...[
+        const _GroupLabel('Русский язык'),
+        for (final model in russian) ...[
+          ModelCard(model: model),
+          const SizedBox(height: kGapM),
+        ],
+      ],
+      if (multilingual.isNotEmpty) ...[
+        const _GroupLabel('Многоязычные'),
+        for (final model in multilingual) ...[
+          ModelCard(model: model),
+          const SizedBox(height: kGapM),
+        ],
+      ],
+    ];
+  }
+}
+
+/// Сколько моделей на устройстве и сколько места они занимают.
+class _Summary extends StatelessWidget {
+  const _Summary({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    final count = kModelCatalog.where((m) => controller.models.isReady(m.id)).length;
+
+    return FutureBuilder<int>(
+      future: controller.models.usedBytes(),
+      builder: (context, snapshot) {
+        final size = snapshot.data;
+        final text = count == 0
+            ? 'На устройстве пока нет моделей'
+            : '$count ${_plural(count)} на устройстве'
+                '${size != null ? '  ·  ${formatSize(size)}' : ''}';
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: kGapM),
+          child: Text(
+            text,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  static String _plural(int count) {
+    final mod10 = count % 10;
+    final mod100 = count % 100;
+    if (mod10 == 1 && mod100 != 11) return 'модель';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'модели';
+    return 'моделей';
   }
 }
 
@@ -56,330 +155,56 @@ class _SectionTitle extends StatelessWidget {
   final String text;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(top: 8, bottom: 12),
-        child: Text(
-          text,
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                letterSpacing: 0.4,
-              ),
-        ),
-      );
-}
-
-class ModelCard extends StatelessWidget {
-  const ModelCard({
-    super.key,
-    required this.model,
-    required this.controller,
-  });
-
-  final AsrModel model;
-  final AppController controller;
-
-  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
 
-    final status = controller.models.statusOf(model.id);
-    final download = controller.models.downloadOf(model.id);
-    final selected = controller.settings.modelId == model.id;
-
-    return Card(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: status == ModelStatus.ready
-            ? () => controller.selectModel(model)
-            : null,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            model.name,
-                            style: theme.textTheme.titleMedium,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (model.recommended) ...[
-                          const SizedBox(width: 8),
-                          _Chip(
-                            label: 'рекомендуем',
-                            color: scheme.primaryContainer,
-                            textColor: scheme.onPrimaryContainer,
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  if (selected)
-                    Icon(Icons.check_circle_rounded, color: scheme.primary),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                model.description,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _Metric(
-                    icon: Icons.speed_rounded,
-                    label: 'скорость',
-                    value: model.speedScore,
-                  ),
-                  const SizedBox(width: 16),
-                  _Metric(
-                    icon: Icons.center_focus_strong_rounded,
-                    label: 'точность',
-                    value: model.accuracyScore,
-                  ),
-                  const Spacer(),
-                  Text(
-                    _formatSize(model.sizeBytes),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _Actions(
-                model: model,
-                controller: controller,
-                status: status,
-                download: download,
-                selected: selected,
-              ),
-            ],
-          ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, kGapL, 0, kGapM),
+      child: Text(
+        text.toUpperCase(),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.primary,
+          letterSpacing: 1.1,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );
   }
-
-  static String _formatSize(int bytes) {
-    if (bytes >= 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} ГБ';
-    }
-    return '${(bytes / (1024 * 1024)).round()} МБ';
-  }
 }
 
-class _Actions extends StatelessWidget {
-  const _Actions({
-    required this.model,
-    required this.controller,
-    required this.status,
-    required this.download,
-    required this.selected,
-  });
+class _GroupLabel extends StatelessWidget {
+  const _GroupLabel(this.text);
 
-  final AsrModel model;
-  final AppController controller;
-  final ModelStatus status;
-  final ModelDownload? download;
-  final bool selected;
+  final String text;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
 
-    switch (status) {
-      case ModelStatus.downloading:
-        final progress = download?.progress ?? 0;
-        final received = download?.receivedBytes ?? 0;
-        final total = download?.totalBytes ?? model.sizeBytes;
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: progress == 0 ? null : progress,
-                minHeight: 6,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '${ModelCard._formatSize(received)} из '
-                    '${ModelCard._formatSize(total)}'
-                    '${download != null && download!.fileCount > 0 ? '  ·  файл ${download!.fileIndex}/${download!.fileCount}' : ''}',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => controller.models.cancel(model.id),
-                  child: const Text('Отменить'),
-                ),
-              ],
-            ),
-          ],
-        );
-
-      case ModelStatus.ready:
-        return Row(
-          children: [
-            if (selected)
-              Text(
-                'Выбрана',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: scheme.primary,
-                ),
-              )
-            else
-              FilledButton.tonal(
-                onPressed: () => controller.selectModel(model),
-                child: const Text('Выбрать'),
-              ),
-            const Spacer(),
-            TextButton.icon(
-              onPressed: () => _confirmRemove(context),
-              icon: const Icon(Icons.delete_outline, size: 18),
-              label: const Text('Удалить'),
-              style: TextButton.styleFrom(foregroundColor: scheme.error),
-            ),
-          ],
-        );
-
-      case ModelStatus.failed:
-        return Row(
-          children: [
-            Expanded(
-              child: Text(
-                download?.error ?? 'Не удалось скачать',
-                style: theme.textTheme.bodySmall?.copyWith(color: scheme.error),
-              ),
-            ),
-            FilledButton(
-              onPressed: () => controller.downloadModel(model),
-              child: const Text('Повторить'),
-            ),
-          ],
-        );
-
-      case ModelStatus.notDownloaded:
-        return Row(
-          children: [
-            FilledButton.icon(
-              onPressed: () => controller.downloadModel(model),
-              icon: const Icon(Icons.download_rounded, size: 18),
-              label: const Text('Скачать'),
-            ),
-          ],
-        );
-    }
-  }
-
-  Future<void> _confirmRemove(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Удалить «${model.name}»?'),
-        content: Text(
-          'Файлы модели (${ModelCard._formatSize(model.sizeBytes)}) '
-          'будут удалены с устройства. Скачать снова можно в любой момент.',
+    return Padding(
+      padding: const EdgeInsets.only(bottom: kGapS),
+      child: Text(
+        text,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Удалить'),
-          ),
-        ],
       ),
     );
-
-    if (confirmed == true) await controller.removeModel(model);
   }
 }
 
-class _Metric extends StatelessWidget {
-  const _Metric({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final int value;
-
+class _Footnote extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
 
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: scheme.onSurfaceVariant),
-        const SizedBox(width: 6),
-        SizedBox(
-          width: 52,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(3),
-            child: LinearProgressIndicator(
-              value: value / 100,
-              minHeight: 5,
-              backgroundColor: scheme.surfaceContainerHighest,
-            ),
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text(
-          label,
-          style: Theme.of(context)
-              .textTheme
-              .bodySmall
-              ?.copyWith(color: scheme.onSurfaceVariant),
-        ),
-      ],
+    return Text(
+      'Модели скачиваются один раз и работают офлайн. Прерванная загрузка '
+      'продолжается с того же места, а удалённую модель можно вернуть в любой '
+      'момент.',
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
     );
   }
-}
-
-class _Chip extends StatelessWidget {
-  const _Chip({
-    required this.label,
-    required this.color,
-    required this.textColor,
-  });
-
-  final String label;
-  final Color color;
-  final Color textColor;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(fontSize: 11, color: textColor),
-        ),
-      );
 }

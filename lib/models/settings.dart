@@ -10,6 +10,15 @@ enum RecordMode {
   toggle,
 }
 
+/// Как новая расшифровка ложится на то, что уже есть на экране.
+enum ComposeMode {
+  /// Каждая запись заменяет предыдущий текст — быстрая диктовка.
+  replace,
+
+  /// Каждая запись дописывается абзацем — длинная заметка.
+  append,
+}
+
 /// Что делать с текстом сразу после распознавания.
 enum AfterTranscribe {
   /// Ничего, текст просто остаётся на экране и в истории.
@@ -63,6 +72,7 @@ class Settings {
     this.language = kAutoLanguage,
     this.translateToEnglish = false,
     this.recordMode = RecordMode.hold,
+    this.composeMode = ComposeMode.replace,
     this.afterTranscribe = AfterTranscribe.copy,
     this.vadEnabled = true,
     this.vadThreshold = 0.5,
@@ -89,6 +99,11 @@ class Settings {
   final bool translateToEnglish;
 
   final RecordMode recordMode;
+
+  /// Режим склейки по умолчанию. На главном экране переключается на лету,
+  /// здесь хранится последний выбор.
+  final ComposeMode composeMode;
+
   final AfterTranscribe afterTranscribe;
 
   /// Отрезать тишину через Silero VAD перед распознаванием.
@@ -130,6 +145,7 @@ class Settings {
     String? language,
     bool? translateToEnglish,
     RecordMode? recordMode,
+    ComposeMode? composeMode,
     AfterTranscribe? afterTranscribe,
     bool? vadEnabled,
     double? vadThreshold,
@@ -150,6 +166,7 @@ class Settings {
       language: language ?? this.language,
       translateToEnglish: translateToEnglish ?? this.translateToEnglish,
       recordMode: recordMode ?? this.recordMode,
+      composeMode: composeMode ?? this.composeMode,
       afterTranscribe: afterTranscribe ?? this.afterTranscribe,
       vadEnabled: vadEnabled ?? this.vadEnabled,
       vadThreshold: vadThreshold ?? this.vadThreshold,
@@ -172,6 +189,7 @@ class Settings {
         'language': language,
         'translateToEnglish': translateToEnglish,
         'recordMode': recordMode.name,
+        'composeMode': composeMode.name,
         'afterTranscribe': afterTranscribe.name,
         'vadEnabled': vadEnabled,
         'vadThreshold': vadThreshold,
@@ -202,6 +220,11 @@ class Settings {
       translateToEnglish: json['translateToEnglish'] as bool? ?? false,
       recordMode:
           pick(RecordMode.values, json['recordMode'], RecordMode.hold),
+      composeMode: pick(
+        ComposeMode.values,
+        json['composeMode'],
+        ComposeMode.replace,
+      ),
       afterTranscribe: pick(
         AfterTranscribe.values,
         json['afterTranscribe'],

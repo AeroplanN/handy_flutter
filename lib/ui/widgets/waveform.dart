@@ -1,19 +1,25 @@
 import 'dart:collection';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 /// Бегущая дорожка громкости — визуальное подтверждение, что микрофон слышит.
+///
+/// Слушает уровень напрямую: кадры звука приходят несколько раз в секунду и
+/// не должны перерисовывать экран целиком.
 class Waveform extends StatefulWidget {
   const Waveform({
     super.key,
-    required this.level,
+    required this.levelListenable,
     required this.active,
     this.barCount = 48,
+    this.height = 56,
   });
 
-  final double level;
+  final ValueListenable<double> levelListenable;
   final bool active;
   final int barCount;
+  final double height;
 
   @override
   State<Waveform> createState() => _WaveformState();
@@ -23,18 +29,37 @@ class _WaveformState extends State<Waveform> {
   final Queue<double> _history = Queue<double>();
 
   @override
+  void initState() {
+    super.initState();
+    widget.levelListenable.addListener(_onLevel);
+  }
+
+  @override
   void didUpdateWidget(Waveform oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    if (!widget.active) {
-      if (_history.isNotEmpty) _history.clear();
-      return;
+    if (oldWidget.levelListenable != widget.levelListenable) {
+      oldWidget.levelListenable.removeListener(_onLevel);
+      widget.levelListenable.addListener(_onLevel);
     }
+    if (!widget.active && _history.isNotEmpty) _history.clear();
+  }
 
-    _history.addLast(widget.level);
-    while (_history.length > widget.barCount) {
-      _history.removeFirst();
-    }
+  @override
+  void dispose() {
+    widget.levelListenable.removeListener(_onLevel);
+    super.dispose();
+  }
+
+  void _onLevel() {
+    if (!widget.active || !mounted) return;
+
+    setState(() {
+      _history.addLast(widget.levelListenable.value);
+      while (_history.length > widget.barCount) {
+        _history.removeFirst();
+      }
+    });
   }
 
   @override
@@ -42,7 +67,7 @@ class _WaveformState extends State<Waveform> {
     final scheme = Theme.of(context).colorScheme;
 
     return SizedBox(
-      height: 56,
+      height: widget.height,
       child: CustomPaint(
         painter: _WaveformPainter(
           levels: _history.toList(),

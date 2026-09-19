@@ -34,7 +34,7 @@ class EngineConfig {
 
   final int numThreads;
 
-  /// Код языка для Whisper; пустая строка — автоопределение.
+  /// Код языка для Whisper и Nemotron; пустая строка — автоопределение.
   final String language;
 
   /// Whisper: переводить на английский вместо расшифровки.
@@ -71,10 +71,14 @@ class EngineConfig {
     String path(String? fileName) =>
         fileName == null ? '' : paths.modelFilePath(model.id, fileName);
 
-    // Подсказка языка имеет смысл только для многоязычных моделей Whisper:
-    // у русских GigaAM язык один и задавать его нечем.
-    final wantsLanguage =
-        model.arch == ModelArch.whisper && settings.language != kAutoLanguage;
+    // Подсказку языка принимают только многоязычные модели — Whisper и
+    // Nemotron: у русских GigaAM язык один и задавать его нечем.
+    const multilingualArchs = {
+      ModelArch.whisper,
+      ModelArch.nemotronStreaming,
+    };
+    final wantsLanguage = multilingualArchs.contains(model.arch) &&
+        settings.language != kAutoLanguage;
 
     return EngineConfig(
       modelId: model.id,

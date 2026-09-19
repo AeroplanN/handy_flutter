@@ -35,6 +35,32 @@ class ModelDownload {
       totalBytes == 0 ? 0 : (receivedBytes / totalBytes).clamp(0.0, 1.0);
 }
 
+/// Скользящая оценка скорости загрузки: по последним замерам, чтобы цифра
+/// не прыгала на каждом чанке.
+class _Rate {
+  static const _window = 6;
+
+  final List<(DateTime, int)> _samples = [];
+
+  void add(int receivedBytes) {
+    _samples.add((DateTime.now(), receivedBytes));
+    if (_samples.length > _window) _samples.removeAt(0);
+  }
+
+  /// Байт в секунду или null, пока замеров слишком мало.
+  double? get bytesPerSecond {
+    if (_samples.length < 2) return null;
+
+    final (firstAt, firstBytes) = _samples.first;
+    final (lastAt, lastBytes) = _samples.last;
+    final seconds = lastAt.difference(firstAt).inMilliseconds / 1000;
+    if (seconds <= 0) return null;
+
+    final speed = (lastBytes - firstBytes) / seconds;
+    return speed > 0 ? speed : null;
+  }
+}
+
 /// Скачивает, проверяет и удаляет модели — аналог `ModelManager` из Handy.
 ///
 /// Каждый файл тянется отдельно во временный `.part` и переименовывается
@@ -90,6 +116,43 @@ class ModelManager extends ChangeNotifier {
     return total;
   }
 
+  final Map<String, _Rate> _rates = {};
+  final Map<String, DateTime> _lastPublished = {};
+
+  /// Текущая скорость загрузки модели, байт в секунду.
+  double? speedOf(String modelId) => _rates[modelId]?.bytesPerSecond;
+
+  /// Сколько осталось ждать при текущей скорости.
+  Duration? etaOf(String modelId) {
+    final download = _downloads[modelId];
+    final speed = speedOf(modelId);
+    if (download == null || speed == null || speed <= 0) return null;
+
+    final left = download.totalBytes - download.receivedBytes;
+    if (left <= 0) return Duration.zero;
+
+    return Duration(seconds: (left / speed).round());
+  }
+
+  /// Сколько места занимает каждая скачанная модель.
+  Future<Map<String, int>> usedBytesByModel() async {
+    final paths = await AppPaths.instance();
+    final result = <String, int>{};
+
+    for (final model in kModelCatalog) {
+      final dir = paths.modelDir(model.id);
+      if (!await dir.exists()) continue;
+
+      var size = 0;
+      await for (final entity in dir.list(recursive: true)) {
+        if (entity is File) size += await entity.length();
+      }
+      if (size > 0) result[model.id] = size;
+    }
+
+    return result;
+  }
+
   Future<void> download(AsrModel model) async {
     if (_cancelTokens.containsKey(model.id)) return;
 
@@ -102,9 +165,23 @@ class ModelManager extends ChangeNotifier {
     final total = model.sizeBytes + (_vadReady ? 0 : sileroVadFile.sizeBytes);
     var doneBytes = 0;
 
+    final rate = _rates[model.id] = _Rate();
+
+    // Чанки приходят десятками в секунду. Перерисовывать по каждому нельзя:
+    // прогресс теперь виден и в шапке главного экрана.
     void publish(ModelDownload value) {
       _downloads[model.id] = value;
-      notifyListeners();
+      rate.add(value.receivedBytes);
+
+      final terminal = value.status != ModelStatus.downloading;
+      final last = _lastPublished[model.id];
+      final due = last == null ||
+          DateTime.now().difference(last) >= const Duration(milliseconds: 150);
+
+      if (terminal || due) {
+        _lastPublished[model.id] = DateTime.now();
+        notifyListeners();
+      }
     }
 
     publish(ModelDownload(

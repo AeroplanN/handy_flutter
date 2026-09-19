@@ -199,12 +199,15 @@ Future<void> _isolateMain(SendPort toMain) async {
   sherpa.initBindings();
 
   sherpa.OfflineRecognizer? recognizer;
+  sherpa.OnlineRecognizer? streamingRecognizer;
   sherpa.VoiceActivityDetector? vad;
   EngineConfig? config;
 
   void release() {
     recognizer?.free();
     recognizer = null;
+    streamingRecognizer?.free();
+    streamingRecognizer = null;
     vad?.free();
     vad = null;
     config = null;
@@ -215,18 +218,28 @@ Future<void> _isolateMain(SendPort toMain) async {
       switch (message) {
         case _LoadCommand(config: final newConfig):
           release();
-          recognizer = _createRecognizer(newConfig);
+          if (newConfig.arch == ModelArch.nemotronStreaming) {
+            streamingRecognizer = _createStreamingRecognizer(newConfig);
+          } else {
+            recognizer = _createRecognizer(newConfig);
+          }
           vad = _createVad(newConfig);
           config = newConfig;
           toMain.send(const _Ok());
 
         case _TranscribeCommand(samples: final samples, sampleRate: final rate):
-          final active = recognizer;
-          if (active == null) {
+          if (recognizer == null && streamingRecognizer == null) {
             toMain.send(const _Err('Модель не загружена'));
             break;
           }
-          final result = _run(active, vad, samples, rate, config);
+          final result = _run(
+            recognizer,
+            streamingRecognizer,
+            vad,
+            samples,
+            rate,
+            config,
+          );
           toMain.send(_Ok(result));
 
         case _UnloadCommand():
@@ -242,6 +255,32 @@ Future<void> _isolateMain(SendPort toMain) async {
       toMain.send(_Err(e.toString()));
     }
   }
+}
+
+/// Nemotron 3.5 — потоковая модель: её поднимает streaming-API sherpa-onnx.
+/// Запись всё равно распознаётся целиком, просто кусками по мере поступления.
+sherpa.OnlineRecognizer _createStreamingRecognizer(EngineConfig config) {
+  return sherpa.OnlineRecognizer(
+    sherpa.OnlineRecognizerConfig(
+      // У Nemotron 128-мерные фильтр-банки вместо привычных 80.
+      feat: const sherpa.FeatureConfig(
+        sampleRate: kSampleRate,
+        featureDim: 128,
+      ),
+      model: sherpa.OnlineModelConfig(
+        transducer: sherpa.OnlineTransducerModelConfig(
+          encoder: config.encoder,
+          decoder: config.decoder,
+          joiner: config.joiner,
+        ),
+        tokens: config.tokens,
+        numThreads: config.numThreads,
+        debug: false,
+      ),
+      // Запись уже нарезана VAD: делить её ещё и по правилам эндпойнта незачем.
+      enableEndpoint: false,
+    ),
+  );
 }
 
 sherpa.OfflineRecognizer _createRecognizer(EngineConfig config) {
@@ -264,6 +303,8 @@ sherpa.OfflineRecognizer _createRecognizer(EngineConfig config) {
         numThreads: config.numThreads,
         debug: false,
       ),
+    ModelArch.nemotronStreaming =>
+      throw StateError('Nemotron распознаётся через streaming-API'),
     ModelArch.whisper => sherpa.OfflineModelConfig(
         whisper: sherpa.OfflineWhisperModelConfig(
           encoder: config.encoder,
@@ -308,7 +349,8 @@ sherpa.VoiceActivityDetector? _createVad(EngineConfig config) {
 }
 
 Map<String, dynamic> _run(
-  sherpa.OfflineRecognizer recognizer,
+  sherpa.OfflineRecognizer? recognizer,
+  sherpa.OnlineRecognizer? streamingRecognizer,
   sherpa.VoiceActivityDetector? vad,
   Float32List samples,
   int sampleRate,
@@ -327,7 +369,18 @@ Map<String, dynamic> _run(
   for (final chunk in chunks) {
     if (chunk.isEmpty) continue;
 
-    final stream = recognizer.createStream();
+    if (streamingRecognizer != null) {
+      final text = _decodeStreaming(
+        streamingRecognizer,
+        chunk,
+        sampleRate,
+        config?.language ?? '',
+      );
+      if (text.isNotEmpty) texts.add(text);
+      continue;
+    }
+
+    final stream = recognizer!.createStream();
     try {
       stream.acceptWaveform(samples: chunk, sampleRate: sampleRate);
       recognizer.decode(stream);
@@ -340,7 +393,49 @@ Map<String, dynamic> _run(
     }
   }
 
+  // Streaming-результат языка не сообщает: показываем тот, что выбран в
+  // настройках (пустая строка — значит модель определяла язык сама).
+  if (streamingRecognizer != null && config != null) {
+    language = config.language;
+  }
+
   return {'text': texts.join(' ').trim(), 'language': language};
+}
+
+/// Скармливает кусок речи потоковой модели и дожидается финального текста.
+///
+/// Пустая [language] означает автоопределение: модель сама поймёт язык и
+/// уберёт служебный языковой тег из результата.
+String _decodeStreaming(
+  sherpa.OnlineRecognizer recognizer,
+  Float32List chunk,
+  int sampleRate,
+  String language,
+) {
+  final stream = recognizer.createStream();
+  try {
+    if (language.isNotEmpty) {
+      stream.setOption(key: 'language', value: language);
+    }
+
+    stream.acceptWaveform(samples: chunk, sampleRate: sampleRate);
+
+    // Хвост тишины: без него модель придержит последние слова,
+    // ожидая продолжения потока.
+    stream.acceptWaveform(
+      samples: Float32List((sampleRate * 0.5).round()),
+      sampleRate: sampleRate,
+    );
+    stream.inputFinished();
+
+    while (recognizer.isReady(stream)) {
+      recognizer.decode(stream);
+    }
+
+    return recognizer.getResult(stream).text.trim();
+  } finally {
+    stream.free();
+  }
 }
 
 /// Прогоняет запись через Silero VAD и возвращает только куски с речью.

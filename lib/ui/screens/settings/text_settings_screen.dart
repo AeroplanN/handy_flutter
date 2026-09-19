@@ -41,33 +41,6 @@ class TextSettingsScreen extends StatelessWidget {
             }
           },
         ),
-        ListTile(
-          leading: const Icon(Icons.playlist_add_rounded),
-          title: const Text('Новая запись по умолчанию'),
-          subtitle: Text(_composeLabel(settings.composeMode)),
-          trailing: const Icon(Icons.chevron_right_rounded),
-          onTap: () async {
-            final picked = await pickOption<ComposeMode>(
-              context: context,
-              title: 'Новая запись',
-              current: settings.composeMode,
-              options: [
-                for (final value in ComposeMode.values)
-                  (value, _composeLabel(value)),
-              ],
-            );
-            if (picked != null && context.mounted) {
-              await context.updateSettings(
-                settings.copyWith(composeMode: picked),
-              );
-            }
-          },
-        ),
-        const SettingsNote(
-          'Режим можно переключать прямо над текстом на главном экране — '
-          'здесь задаётся только начальный.',
-        ),
-
         const SettingsHeader('Чистка'),
         SwitchListTile(
           secondary: const Icon(Icons.cleaning_services_rounded),
@@ -97,11 +70,6 @@ class TextSettingsScreen extends StatelessWidget {
         AfterTranscribe.nothing => 'Оставить на экране',
         AfterTranscribe.copy => 'Копировать в буфер',
         AfterTranscribe.copyAndShare => 'Копировать и предложить отправить',
-      };
-
-  static String _composeLabel(ComposeMode value) => switch (value) {
-        ComposeMode.replace => 'Заменять предыдущий текст',
-        ComposeMode.append => 'Дописывать абзацем к тексту',
       };
 
   static String _rulesPlural(int count) {

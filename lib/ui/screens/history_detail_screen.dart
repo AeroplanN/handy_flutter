@@ -12,7 +12,7 @@ import '../../services/app_paths.dart';
 import '../../state/app_controller.dart';
 import '../tokens.dart';
 
-/// Одна расшифровка целиком: читать, править, копировать, продолжить.
+/// Одна расшифровка целиком: прочитать, поправить, скопировать, отправить.
 ///
 /// Отдельный экран, а не шторка: править длинный текст под клавиатурой в
 /// нижнем листе неудобно.
@@ -98,16 +98,6 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
     );
   }
 
-  Future<void> _continueInNote() async {
-    final controller = context.read<AppController>();
-    await _save();
-    await controller.loadEntryIntoCurrent(_entry);
-
-    if (!mounted) return;
-    // Возвращаемся на главный экран — текст уже там.
-    Navigator.of(context).popUntil((route) => route.isFirst);
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -190,11 +180,6 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
                       icon: const Icon(Icons.graphic_eq_rounded, size: 18),
                       label: const Text('Аудио'),
                     ),
-                  TextButton.icon(
-                    onPressed: _continueInNote,
-                    icon: const Icon(Icons.edit_note_rounded, size: 18),
-                    label: const Text('Продолжить'),
-                  ),
                 ],
               ),
             ),

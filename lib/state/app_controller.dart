@@ -58,27 +58,6 @@ class AppController extends ChangeNotifier {
   RecordingState _state = RecordingState.idle;
   RecordingState get state => _state;
 
-  String _currentText = '';
-  String get currentText => _currentText;
-
-  /// Запись истории, которой соответствует текст на экране. В режиме заметки
-  /// сюда переписывается весь накопленный текст, чтобы правки не потерялись.
-  int? _currentEntryId;
-  int? get currentEntryId => _currentEntryId;
-
-  /// Текст правили руками и ещё не сохранили.
-  bool _currentDirty = false;
-  bool get currentDirty => _currentDirty;
-
-  /// Язык, который определила модель в последней расшифровке.
-  String _lastLanguage = '';
-  String get lastLanguage => _lastLanguage;
-
-  Duration? _lastElapsed;
-
-  /// Сколько заняло последнее распознавание.
-  Duration? get lastElapsed => _lastElapsed;
-
   String? _error;
   String? get error => _error;
 
@@ -109,7 +88,6 @@ class AppController extends ChangeNotifier {
 
   StreamSubscription<double>? _levelSub;
   Timer? _tick;
-  Timer? _autosave;
 
   /// Выбранная модель из каталога.
   AsrModel? get selectedModel => _settings.model;
@@ -131,7 +109,6 @@ class AppController extends ChangeNotifier {
       modelDownloading: model != null &&
           models.statusOf(model.id) == ModelStatus.downloading,
       canRecord: canRecord,
-      hasText: _currentText.isNotEmpty,
     );
   }
 
@@ -213,10 +190,6 @@ class AppController extends ChangeNotifier {
 
     _error = null;
 
-    // Правки предыдущего текста могли не успеть сохраниться: в режиме
-    // «заменять» новая расшифровка их затрёт, поэтому фиксируем сейчас.
-    await saveCurrentToHistory();
-
     try {
       await _audio.start(onLimitReached: stopAndTranscribe);
     } catch (e) {
@@ -284,8 +257,6 @@ class AppController extends ChangeNotifier {
         customWords: _settings.customWords,
       );
 
-      _lastElapsed = result.elapsed;
-      _lastLanguage = result.language;
       _state = RecordingState.idle;
 
       if (text.isEmpty) {
@@ -294,38 +265,12 @@ class AppController extends ChangeNotifier {
         return;
       }
 
-      final append = _settings.composeMode == ComposeMode.append;
-      if (append) {
-        _appendChunk(text);
-      } else {
-        _currentText = text;
-        _currentEntryId = null;
-        _currentDirty = false;
-      }
       notifyListeners();
 
-      // В режиме заметки не копируем и не открываем «Поделиться» на каждую
-      // диктовку: человек ещё пишет. Отклик оставляем.
-      if (append) {
-        unawaited(_feedback.transcriptionReady());
-      } else {
-        await _deliver(text);
-      }
+      // Текст не задерживается на экране: сразу в буфер и в историю.
+      await _deliver(text);
 
-      // Каждая диктовка остаётся в истории отдельной записью со своим
-      // аудио — так работают и хранение записей, и их удаление по сроку.
-      final entry = await _saveToHistory(
-        text: text,
-        samples: samples,
-        modelId: model.id,
-      );
-
-      if (append && _currentEntryId != null) {
-        // Заметка уже начата: её первая запись хранит текст целиком.
-        await _syncNoteText();
-      } else {
-        _currentEntryId = entry.id;
-      }
+      await _saveToHistory(text: text, samples: samples, modelId: model.id);
     } catch (e) {
       _state = RecordingState.idle;
       _fail('Ошибка распознавания: $e');
@@ -437,74 +382,6 @@ class AppController extends ChangeNotifier {
 
   // ── Текущий текст ────────────────────────────────────────────────────────
 
-  /// Правка текста руками. Сохранение отложенное: пишем в историю не на
-  /// каждую букву, а через паузу после того, как человек остановился.
-  void editCurrent(String text) {
-    if (text == _currentText) return;
-    _currentText = text;
-    _currentDirty = true;
-    notifyListeners();
-
-    _autosave?.cancel();
-    _autosave = Timer(const Duration(milliseconds: 1500), () {
-      unawaited(saveCurrentToHistory());
-    });
-  }
-
-  /// Дописывает распознанный кусок к тому, что уже на экране.
-  ///
-  /// Разделитель всегда абзац: он предсказуем и убирается одним Backspace,
-  /// а угадывать «точка или пробел» за пользователя мы не беремся.
-  static const _paragraphBreak = '\n\n';
-
-  void _appendChunk(String chunk) {
-    _currentText = _currentText.isEmpty
-        ? chunk
-        : '${_currentText.trimRight()}$_paragraphBreak$chunk';
-  }
-
-  /// Сохраняет текст на экране в его запись истории.
-  Future<void> saveCurrentToHistory() async {
-    _autosave?.cancel();
-    _autosave = null;
-
-    if (!_currentDirty || _currentEntryId == null) return;
-    await _syncNoteText();
-  }
-
-  /// Переписывает текст заметки в её запись истории.
-  Future<void> _syncNoteText() async {
-    final id = _currentEntryId;
-    if (id == null) return;
-
-    await _history.updateText(id, _currentText);
-    _currentDirty = false;
-
-    _entries = [
-      for (final entry in _entries)
-        entry.id == id ? entry.copyWith(text: _currentText) : entry,
-    ];
-    notifyListeners();
-  }
-
-  /// Начать с чистого листа, не потеряв текущую заметку.
-  Future<void> startNewNote() async {
-    await saveCurrentToHistory();
-    clearCurrent();
-  }
-
-  /// Открыть запись истории в редакторе на главном экране и продолжить её.
-  Future<void> loadEntryIntoCurrent(HistoryEntry entry) async {
-    await saveCurrentToHistory();
-
-    _currentText = entry.text;
-    _currentEntryId = entry.id;
-    _currentDirty = false;
-    _lastElapsed = null;
-    _error = null;
-    notifyListeners();
-  }
-
   /// Правка текста записи прямо в истории.
   Future<void> updateEntryText(HistoryEntry entry, String text) async {
     final id = entry.id;
@@ -514,22 +391,6 @@ class AppController extends ChangeNotifier {
     _entries = [
       for (final e in _entries) e.id == id ? e.copyWith(text: text) : e,
     ];
-    if (_currentEntryId == id) _currentText = text;
-    notifyListeners();
-  }
-
-  Future<void> copyCurrent() => _output.copy(_currentText);
-
-  Future<void> shareCurrent() => _output.share(_currentText);
-
-  void clearCurrent() {
-    _autosave?.cancel();
-    _autosave = null;
-    _currentText = '';
-    _currentEntryId = null;
-    _currentDirty = false;
-    _lastLanguage = '';
-    _lastElapsed = null;
     notifyListeners();
   }
 
@@ -628,7 +489,6 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _autosave?.cancel();
     levelNotifier.dispose();
     elapsedNotifier.dispose();
     _tick?.cancel();

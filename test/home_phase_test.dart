@@ -7,14 +7,12 @@ void main() {
     bool transcribing = false,
     bool modelDownloading = false,
     bool canRecord = true,
-    bool hasText = false,
   }) =>
       computeHomePhase(
         recording: recording,
         transcribing: transcribing,
         modelDownloading: modelDownloading,
         canRecord: canRecord,
-        hasText: hasText,
       );
 
   test('без модели предлагаем её скачать', () {
@@ -39,12 +37,7 @@ void main() {
     );
   });
 
-  test('в покое фаза зависит от того, есть ли текст', () {
-    expect(phase(), HomePhase.idleEmpty);
-    expect(phase(hasText: true), HomePhase.idleText);
-  });
-
-  test('текст остаётся виден, пока идёт следующая запись', () {
-    expect(phase(recording: true, hasText: true), HomePhase.recording);
+  test('когда всё готово и ничего не происходит — покой', () {
+    expect(phase(), HomePhase.idle);
   });
 }

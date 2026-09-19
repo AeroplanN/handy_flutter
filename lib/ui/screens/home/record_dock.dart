@@ -26,12 +26,7 @@ class RecordDock extends StatelessWidget {
 
     final recording = phase == HomePhase.recording;
     final compact = MediaQuery.viewInsetsOf(context).bottom > 0;
-    final buttonSize = switch (phase) {
-      _ when compact => 64.0,
-      HomePhase.idleEmpty => 132.0,
-      HomePhase.recording => 132.0,
-      _ => 104.0,
-    };
+    final buttonSize = compact ? 64.0 : 132.0;
 
     return Padding(
       padding: EdgeInsets.fromLTRB(kGapL, kGapS, kGapL, compact ? kGapS : kGapL),
@@ -150,15 +145,15 @@ class _Hint extends StatelessWidget {
     final scheme = theme.colorScheme;
 
     final hold = controller.settings.recordMode == RecordMode.hold;
-    final append = controller.settings.composeMode == ComposeMode.append;
 
     final text = switch (phase) {
       HomePhase.noModel => 'Сначала скачайте модель',
       HomePhase.modelDownloading => 'Модель качается',
       HomePhase.transcribing => 'Распознаю…',
-      HomePhase.idleText => append ? 'Дописать' : 'Записать заново',
       _ => hold ? 'Удерживайте и говорите' : 'Нажмите и говорите',
     };
+
+    if (text.isEmpty) return const SizedBox.shrink();
 
     return Text(
       text,

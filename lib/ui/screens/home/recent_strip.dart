@@ -5,6 +5,7 @@ import '../../../models/history_entry.dart';
 import '../../../state/app_controller.dart';
 import '../../navigation.dart';
 import '../../tokens.dart';
+import '../history_detail_screen.dart';
 
 /// Три последние расшифровки под подсказкой на пустом экране.
 ///
@@ -71,8 +72,12 @@ class _RecentItem extends StatelessWidget {
         borderRadius: BorderRadius.circular(kRadiusField),
         child: InkWell(
           borderRadius: BorderRadius.circular(kRadiusField),
-          // Тап открывает запись в редакторе — можно сразу продолжить диктовать.
-          onTap: () => controller.loadEntryIntoCurrent(entry),
+          // Тап открывает запись целиком: там её можно прочитать и поправить.
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => HistoryDetailScreen(entry: entry),
+            ),
+          ),
           child: Padding(
             padding: const EdgeInsets.symmetric(
               horizontal: kGapM,

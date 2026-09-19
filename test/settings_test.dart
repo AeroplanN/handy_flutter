@@ -8,7 +8,6 @@ void main() {
       language: 'ru',
       translateToEnglish: true,
       recordMode: RecordMode.toggle,
-      composeMode: ComposeMode.append,
       afterTranscribe: AfterTranscribe.copyAndShare,
       vadThreshold: 0.42,
       customWords: {'flatter': 'Flutter'},
@@ -23,7 +22,6 @@ void main() {
     expect(restored.language, original.language);
     expect(restored.translateToEnglish, isTrue);
     expect(restored.recordMode, RecordMode.toggle);
-    expect(restored.composeMode, ComposeMode.append);
     expect(restored.afterTranscribe, AfterTranscribe.copyAndShare);
     expect(restored.vadThreshold, closeTo(0.42, 1e-9));
     expect(restored.customWords, {'flatter': 'Flutter'});

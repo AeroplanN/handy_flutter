@@ -11,11 +11,8 @@ enum HomePhase {
   /// Выбранная модель качается прямо сейчас.
   modelDownloading,
 
-  /// Всё готово, текста ещё нет.
-  idleEmpty,
-
-  /// Есть распознанный текст, запись не идёт.
-  idleText,
+  /// Всё готово, можно записывать.
+  idle,
 
   /// Идёт запись.
   recording,
@@ -31,12 +28,11 @@ HomePhase computeHomePhase({
   required bool transcribing,
   required bool modelDownloading,
   required bool canRecord,
-  required bool hasText,
 }) {
   if (recording) return HomePhase.recording;
   if (transcribing) return HomePhase.transcribing;
   if (modelDownloading) return HomePhase.modelDownloading;
   if (!canRecord) return HomePhase.noModel;
 
-  return hasText ? HomePhase.idleText : HomePhase.idleEmpty;
+  return HomePhase.idle;
 }
